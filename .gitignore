@@ -16,6 +16,9 @@ secuchat-cli.exe
 # Go workspace file
 go.work
 
+# User database (contains sensitive data)
+users.json
+
 # Python
 __pycache__/
 *.py[cod]

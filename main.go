@@ -170,9 +170,8 @@ func serveWs(manager *HubManager, w http.ResponseWriter, r *http.Request) {
 		username = "anonymous"
 	}
 
-	// Check if user is admin (simple check - username contains "admin" or specific admin usernames)
-	isAdmin := strings.Contains(strings.ToLower(username), "admin") ||
-		username == "operator1" || username == "commander" || username == "lead"
+	// Check admin status from URL parameter (set by authenticated client)
+	isAdmin := r.URL.Query().Get("admin") == "true"
 
 	log.Printf("New WebSocket connection for room PIN: %s, User: %s, Admin: %v", pin, username, isAdmin)
 

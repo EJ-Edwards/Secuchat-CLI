@@ -22,20 +22,62 @@ type Message struct {
 }
 
 func main() {
-	if len(os.Args) < 3 {
-		fmt.Println("Usage: go run client.go <server_url> <pin> [username]")
-		fmt.Println("Example: go run client.go ws://127.0.0.1:8080/ws REDTEAM01 operator1")
+	if len(os.Args) < 2 {
+		fmt.Println("Secuchat-CLI v1.2.0 - User Management System")
+		fmt.Println("==============================================")
+		fmt.Println("Usage:")
+		fmt.Println("  go run *.go <server_url> [pin]          - Join chat")
+		fmt.Println("  go run *.go --setup                     - Initial admin setup")
+		fmt.Println("  go run *.go --create-user               - Create new user (admin only)")
+		fmt.Println("  go run *.go --list-users                - List all users")
+		fmt.Println("")
+		fmt.Println("Examples:")
+		fmt.Println("  go run *.go ws://127.0.0.1:8080/ws REDTEAM01")
+		fmt.Println("  go run *.go --setup")
+		return
+	}
+
+	switch os.Args[1] {
+	case "--setup":
+		err := InitialSetup()
+		if err != nil {
+			fmt.Printf("❌ Setup failed: %v\n", err)
+		}
+		return
+	case "--list-users":
+		err := ListUsers()
+		if err != nil {
+			fmt.Printf("❌ Failed to list users: %v\n", err)
+		}
+		return
+	case "--create-user":
+		// Need to authenticate first
+		username, isAdmin, err := Login()
+		if err != nil {
+			fmt.Printf("❌ Authentication failed: %v\n", err)
+			return
+		}
+		err = CreateUser(username, isAdmin)
+		if err != nil {
+			fmt.Printf("❌ Failed to create user: %v\n", err)
+		}
 		return
 	}
 
 	serverURL := os.Args[1]
-	pin := os.Args[2]
-	username := "anonymous"
-	if len(os.Args) > 3 {
-		username = os.Args[3]
+	pin := "GENERAL"
+	if len(os.Args) > 2 {
+		pin = os.Args[2]
 	}
 
-	// Add pin and username to URL
+	// Authenticate user
+	username, isAdmin, err := Login()
+	if err != nil {
+		fmt.Printf("❌ Login failed: %v\n", err)
+		return
+	}
+
+	// Add pin, username and admin status to URL
 	u, err := url.Parse(serverURL)
 	if err != nil {
 		log.Fatal("Invalid server URL:", err)
@@ -43,9 +85,16 @@ func main() {
 	q := u.Query()
 	q.Set("pin", pin)
 	q.Set("username", username)
+	if isAdmin {
+		q.Set("admin", "true")
+	}
 	u.RawQuery = q.Encode()
 
-	fmt.Printf("🔗 Connecting to room %s as %s...\n", pin, username)
+	role := "USER"
+	if isAdmin {
+		role = "ADMIN"
+	}
+	fmt.Printf("🔗 Connecting to room %s as %s [%s]...\n", pin, username, role)
 
 	// Connect to WebSocket
 	conn, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
@@ -134,8 +183,29 @@ func main() {
 				if input == "/help" {
 					fmt.Println("📋 Available commands:")
 					fmt.Println("  /quit - Exit the chat")
-					fmt.Println("  /kick <username> - Kick a user (Admin only)")
+					if isAdmin {
+						fmt.Println("  /kick <username> - Kick a user (Admin only)")
+						fmt.Println("  /create-user - Create new user account (Admin only)")
+						fmt.Println("  /list-users - List all registered users (Admin only)")
+					}
 					fmt.Println("  /help - Show this help")
+					continue
+				}
+
+				if input == "/create-user" && isAdmin {
+					fmt.Println("🔄 Creating user... (This will interrupt chat temporarily)")
+					err := CreateUser(username, isAdmin)
+					if err != nil {
+						fmt.Printf("❌ Failed to create user: %v\n", err)
+					}
+					continue
+				}
+
+				if input == "/list-users" && isAdmin {
+					err := ListUsers()
+					if err != nil {
+						fmt.Printf("❌ Failed to list users: %v\n", err)
+					}
 					continue
 				}
 
