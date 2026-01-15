@@ -2,11 +2,11 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"runtime"
 )
 
-// CallPythonToS executes the Python ToS script and returns acceptance status
 func CallPythonToS() bool {
 	var cmd *exec.Cmd
 
@@ -15,6 +15,11 @@ func CallPythonToS() bool {
 	} else {
 		cmd = exec.Command("python3", "tos.py")
 	}
+
+	// Connect stdin/stdout so Python can interact with user
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
 
 	err := cmd.Run()
 	if err != nil {

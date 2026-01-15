@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -64,9 +65,11 @@ var upgrader = websocket.Upgrader{
 }
 
 type Client struct {
-	conn *websocket.Conn
-	send chan []byte
-	hub  *Hub
+	conn     *websocket.Conn
+	send     chan []byte
+	hub      *Hub
+	username string
+	isAdmin  bool
 }
 
 type Hub struct {
@@ -94,7 +97,16 @@ func (h *Hub) run(ctx context.Context) {
 			return
 		case client := <-h.register:
 			h.clients[client] = true
+			adminStatus := ""
+			if client.isAdmin {
+				adminStatus = " [ADMIN]"
+			}
+			welcomeMsg := fmt.Sprintf(`{"type":"system","msg":"👋 %s%s joined room %s"}`, client.username, adminStatus, h.pin)
+			h.broadcast <- []byte(welcomeMsg)
 			client.send <- []byte(`{"type":"system","msg":"👋 Welcome to room ` + h.pin + `"}`)
+			if client.isAdmin {
+				client.send <- []byte(`{"type":"system","msg":"🔑 Admin privileges enabled. Use /kick <username> to remove users."}`)
+			}
 		case client := <-h.unregister:
 			if _, ok := h.clients[client]; ok {
 				delete(h.clients, client)
@@ -153,7 +165,16 @@ func serveWs(manager *HubManager, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("New WebSocket connection for room PIN: %s", pin)
+	username := r.URL.Query().Get("username")
+	if username == "" {
+		username = "anonymous"
+	}
+
+	// Check if user is admin (simple check - username contains "admin" or specific admin usernames)
+	isAdmin := strings.Contains(strings.ToLower(username), "admin") ||
+		username == "operator1" || username == "commander" || username == "lead"
+
+	log.Printf("New WebSocket connection for room PIN: %s, User: %s, Admin: %v", pin, username, isAdmin)
 
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -162,7 +183,13 @@ func serveWs(manager *HubManager, w http.ResponseWriter, r *http.Request) {
 	}
 
 	hub := manager.getHub(pin)
-	client := &Client{conn: conn, send: make(chan []byte, 256), hub: hub}
+	client := &Client{
+		conn:     conn,
+		send:     make(chan []byte, 256),
+		hub:      hub,
+		username: username,
+		isAdmin:  isAdmin,
+	}
 	hub.register <- client
 
 	go client.writePump()
@@ -195,6 +222,43 @@ func (c *Client) readPump() {
 		if strings.Contains(trim, `"type":"ping"`) {
 			c.send <- []byte(`{"type":"pong","ts":"` + time.Now().UTC().Format(time.RFC3339) + `"}`)
 			continue
+		}
+
+		// Handle admin commands
+		var msg map[string]interface{}
+		if err := json.Unmarshal(message, &msg); err == nil {
+			if msgText, ok := msg["msg"].(string); ok && strings.HasPrefix(msgText, "/kick ") {
+				if !c.isAdmin {
+					c.send <- []byte(`{"type":"system","msg":"❌ Access denied. Admin privileges required."}`)
+					continue
+				}
+
+				targetUser := strings.TrimSpace(strings.TrimPrefix(msgText, "/kick "))
+				if targetUser == "" {
+					c.send <- []byte(`{"type":"system","msg":"❌ Usage: /kick <username>"}`)
+					continue
+				}
+
+				kicked := false
+				for client := range c.hub.clients {
+					if client.username == targetUser {
+						client.send <- []byte(`{"type":"system","msg":"🚫 You have been kicked by admin."}`)
+						close(client.send)
+						delete(c.hub.clients, client)
+						client.conn.Close()
+						kicked = true
+						break
+					}
+				}
+
+				if kicked {
+					kickMsg := fmt.Sprintf(`{"type":"system","msg":"🚫 %s was kicked by admin %s"}`, targetUser, c.username)
+					c.hub.broadcast <- []byte(kickMsg)
+				} else {
+					c.send <- []byte(fmt.Sprintf(`{"type":"system","msg":"❌ User '%s' not found in room."}`, targetUser))
+				}
+				continue
+			}
 		}
 
 		c.hub.broadcast <- message
@@ -249,23 +313,10 @@ func main() {
 	if port == "" {
 		port = "8080"
 	}
-	addr := ":" + port
+	addr := "127.0.0.1:" + port
 
 	manager := newHubManager()
 	mux := http.NewServeMux()
-
-	// --- Serve static files ---
-	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("static"))))
-
-	// --- Serve root & fallback routes ---
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		path := "static" + r.URL.Path
-		if _, err := os.Stat(path); os.IsNotExist(err) || strings.HasSuffix(r.URL.Path, "/") {
-			http.ServeFile(w, r, "static/index.html")
-			return
-		}
-		http.ServeFile(w, r, path)
-	})
 
 	// --- WebSocket route ---
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
